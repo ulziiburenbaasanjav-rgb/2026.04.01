@@ -1,0 +1,91 @@
+#property strict
+#include <Trade\Trade.mqh>
+
+// --- ТОХИРГОО ---
+input double   InpBaseBalance = 200.0;     // Лот тооцох суурь баланс
+input double   InpBaseLot     = 0.05;      // 200$ тутамд орох лотны хэмжээ
+input int      InpStopLoss    = 1000;      // 100 Pip
+input int      InpTakeProfit  = 1000;      // 100 Pip
+input int      InpBE_Trigger  = 400;       // 40 Pip ашиг дээр BE идэвхжнэ
+input int      InpRSILevel    = 35;        // Таны хүссэн RSI 35 түвшин
+
+CTrade         trade;
+int            handleRSI;
+
+int OnInit() {
+   handleRSI = iRSI(_Symbol, PERIOD_M5, 14, PRICE_CLOSE);
+   trade.SetExpertMagicNumber(20260217);
+   return(INIT_SUCCEEDED);
+}
+
+//--- Балансаас хамаарч лот тооцох функц
+double CalculateLot() {
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double lot = (balance / InpBaseBalance) * InpBaseLot;
+   
+   double min_lot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double max_lot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+   double lot_step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   
+   lot = MathFloor(lot / lot_step) * lot_step; // Лотны алхмыг тааруулах
+   
+   if(lot < min_lot) lot = min_lot;
+   if(lot > max_lot) lot = max_lot;
+   
+   return lot;
+}
+
+void OnTick() {
+   // 1. Ашиг удирдлага (Breakeven)
+   CheckBreakeven();
+
+   // 2. Оролт шалгах
+   if(PositionsTotal() == 0) {
+      double rsi_val[];
+      ArraySetAsSeries(rsi_val, true);
+      if(CopyBuffer(handleRSI, 0, 0, 2, rsi_val) < 2) return;
+      
+      MqlRates rates[];
+      ArraySetAsSeries(rates, true);
+      if(CopyRates(_Symbol, PERIOD_M5, 0, 2, rates) < 2) return;
+
+      // ОРОЛТЫН НӨХЦӨЛ:
+      // - RSI 35-аас доош байх
+      // - Одоогийн лаа өмнөх лаагаасаа дээшээ зүссэн (Сэргэлт эхлэх)
+      if(rsi_val[0] <= InpRSILevel) {
+         if(rates[0].close > rates[1].close) { 
+            double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+            double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+            double sl = ask - InpStopLoss * point;
+            double tp = ask + InpTakeProfit * point;
+            double dynamicLot = CalculateLot(); // Лот автоматаар тооцогдоно
+            
+            if(trade.Buy(dynamicLot, _Symbol, ask, sl, tp, "M5 RSI 35 Dynamic")) {
+               Print("Арилжаа нээгдлээ. Лот: ", dynamicLot, " RSI: ", rsi_val[0]);
+            }
+         }
+      }
+   }
+}
+
+void CheckBreakeven() {
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+      ulong ticket = PositionGetTicket(i);
+      if(PositionSelectByTicket(ticket)) {
+         if(PositionGetInteger(POSITION_MAGIC) == 20260217) {
+            double entry = PositionGetDouble(POSITION_PRICE_OPEN);
+            double curSL = PositionGetDouble(POSITION_SL);
+            double curPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
+            double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+            
+            double profit_points = (curPrice - entry) / point;
+            
+            // 40 пип ашиг дээр SL-ийг +10 пип ашиг дээр (оролтоос дээш 100 point) авчирна
+            if(profit_points >= InpBE_Trigger && curSL < entry) {
+               double newSL = entry + (100 * point); 
+               trade.PositionModify(ticket, newSL, PositionGetDouble(POSITION_TP));
+            }
+         }
+      }
+   }
+}

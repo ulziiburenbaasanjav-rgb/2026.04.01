@@ -1,0 +1,127 @@
+//+------------------------------------------------------------------+
+//|                                     RSI_Compound_Pro_M5_v3.0.mq5 |
+//+------------------------------------------------------------------+
+#property strict
+#include <Trade\Trade.mqh>
+
+input group "=== Арилжааны Чиглэл ==="
+input bool   InpAllowBuy     = true; // Buy арилжааг зөвшөөрөх
+input bool   InpAllowSell    = true; // Sell арилжааг зөвшөөрөх
+
+input group "=== RSI Түвшин ба Тохиргоо ==="
+input int    InpRSI_Period   = 14;   
+input double InpRSI_BuyLevel = 28.0; 
+input double InpRSI_SellLevel = 75.0;
+
+input group "=== Хамгаалалт ба Цаг ==="
+input int    InpMaxSpread    = 40;   
+input ENUM_TIMEFRAMES InpTimeframe = PERIOD_M5;
+
+input group "=== Ашиг ба Алдагдал (Pips) ==="
+input int    InpTP_Pips      = 200;  
+input int    InpSL_Pips      = 50;
+input int    InpBE_Step1_Trig = 50;  // 50 pip дээр эхний BE
+input int    InpBE_Step1_Lock = 10;  // 10 pip ашиг түгжих
+input int    InpBE_Step2_Trig = 100; // 100 pip дээр хоёрдахь BE
+input int    InpBE_Step2_Lock = 50;  // 50 pip ашиг түгжих
+
+input group "=== Эрсдэлийн Удирдлага ==="
+input double InpBaseBalance  = 50.0;
+input double InpBaseLot      = 0.03;
+input double InpMaxLot       = 10.0;
+
+CTrade  trade;
+int     handleRSI;
+int     magicNum = 987654;
+double  pipsToPoints;
+datetime lastTradeBarTime = 0; 
+
+int OnInit()
+{
+   pipsToPoints = (_Digits == 3 || _Digits == 5) ? 10.0 : 1.0;
+   trade.SetExpertMagicNumber(magicNum);
+   handleRSI = iRSI(_Symbol, InpTimeframe, InpRSI_Period, PRICE_CLOSE);
+   if(handleRSI == INVALID_HANDLE) return(INIT_FAILED);
+   return(INIT_SUCCEEDED);
+}
+
+void OnDeinit(const int reason)
+{
+   IndicatorRelease(handleRSI);
+}
+
+void ManageRisk()
+{
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(PositionSelectByTicket(ticket) && PositionGetInteger(POSITION_MAGIC) == magicNum)
+      {
+         double open = PositionGetDouble(POSITION_PRICE_OPEN);
+         double cur = PositionGetDouble(POSITION_PRICE_CURRENT);
+         double sl = PositionGetDouble(POSITION_SL);
+         long type = PositionGetInteger(POSITION_TYPE);
+         double tp = PositionGetDouble(POSITION_TP);
+         
+         double profitPoints = (type == POSITION_TYPE_BUY) ? (cur - open) : (open - cur);
+         double profitPips = profitPoints / (pipsToPoints * _Point);
+         
+         double targetSL = 0;
+
+         // ШАТАЛСАН BE ЛОГИК
+         if(profitPips >= InpBE_Step2_Trig)
+         {
+            if(type == POSITION_TYPE_BUY) targetSL = open + InpBE_Step2_Lock * pipsToPoints * _Point;
+            else targetSL = open - InpBE_Step2_Lock * pipsToPoints * _Point;
+         }
+         else if(profitPips >= InpBE_Step1_Trig)
+         {
+            if(type == POSITION_TYPE_BUY) targetSL = open + InpBE_Step1_Lock * pipsToPoints * _Point;
+            else targetSL = open - InpBE_Step1_Lock * pipsToPoints * _Point;
+         }
+
+         if(targetSL > 0)
+         {
+            if(type == POSITION_TYPE_BUY && (sl < targetSL - _Point || sl == 0))
+               trade.PositionModify(ticket, targetSL, tp);
+            else if(type == POSITION_TYPE_SELL && (sl > targetSL + _Point || sl == 0))
+               trade.PositionModify(ticket, targetSL, tp);
+         }
+      }
+   }
+}
+
+void OnTick()
+{
+   if(SymbolInfoInteger(_Symbol, SYMBOL_SPREAD) > InpMaxSpread) return;
+   
+   double rsiBuffer[];
+   ArraySetAsSeries(rsiBuffer, true);
+   if(CopyBuffer(handleRSI, 0, 0, 2, rsiBuffer) < 2) return;
+   
+   datetime currentBarTime = iTime(_Symbol, InpTimeframe, 0);
+   
+   if(PositionsTotal() == 0 && lastTradeBarTime != currentBarTime) 
+   {
+      double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+      double lot = MathFloor(((balance / InpBaseBalance) * InpBaseLot) / SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP)) * SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+      lot = MathMax(lot, SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN));
+      lot = MathMin(lot, InpMaxLot);
+      
+      // BUY: RSI 28-ыг сэтлэх + AllowBuy ШҮҮЛТҮҮР
+      if(InpAllowBuy && rsiBuffer[1] <= InpRSI_BuyLevel && rsiBuffer[0] > InpRSI_BuyLevel)
+      {
+         double price = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+         if(trade.Buy(lot, _Symbol, price, price - InpSL_Pips*pipsToPoints*_Point, price + InpTP_Pips*pipsToPoints*_Point))
+            lastTradeBarTime = currentBarTime;
+      }
+      // SELL: RSI 75-ыг сэтлэх + AllowSell ШҮҮЛТҮҮР
+      else if(InpAllowSell && rsiBuffer[1] >= InpRSI_SellLevel && rsiBuffer[0] < InpRSI_SellLevel)
+      {
+         double price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+         if(trade.Sell(lot, _Symbol, price, price + InpSL_Pips*pipsToPoints*_Point, price - InpTP_Pips*pipsToPoints*_Point))
+            lastTradeBarTime = currentBarTime;
+      }
+   }
+   ManageRisk();
+}
