@@ -1,142 +1,174 @@
 //+------------------------------------------------------------------+
-//|                                     RSI_Compound_Pro_M5_v4.7.mq5 |
+//|                                     RSI_Compound_Pro_M5_v5.7.mq5 |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade\Trade.mqh>
 
-input group "=== RSI Түвшин ба Тохиргоо ==="
-input int     InpRSI_Period   = 14;   
-input double  InpLevel_Reset  = 10.0;  
-input double  InpLevel_15     = 15.0;  
-input double  InpLevel_20     = 20.0;  
-input double  InpLevel_25     = 25.0;  
-input double  InpLevel_30     = 30.0;  
+input group "=== BUY RSI Түвшин ба Эрсдэл (10, 15, 20, 25) ==="
+input bool    InpAllowBuy      = true;
+input double  InpBuy_L1        = 10.0; // Reset & 1st Entry
+input int     InpBuy_L1_SL     = 100;  // 1-р оролтын SL (Pips)
+input int     InpBuy_L1_TP     = 150;  // 1-р оролтын TP (Pips)
 
-input group "=== Ашиг ба Алдагдал (Pips) ==="
-input int     InpTP_Final     = 150;   
-input int     InpSL_Initial   = 100;   
-input int     InpBE_Level10   = 100;   // 10-ын оролтын BE ашиг
-input int     InpBE_Level15_25= 50;    // 15, 20, 25-ын BE ашиг
+input double  InpBuy_L2        = 15.0;
+input int     InpBuy_L2_SL     = 100;
+input int     InpBuy_L2_TP     = 150;
 
-input group "=== Эрсдэлийн Удирдлага ==="
-input double InpBaseBalance   = 50.0;
-input double InpBaseLot       = 0.03;
-input double InpMaxLot        = 10.0;
+input double  InpBuy_L3        = 20.0;
+input int     InpBuy_L3_SL     = 100;
+input int     InpBuy_L3_TP     = 150;
 
-#define MAGIC_10 987010
-#define MAGIC_15 987015
-#define MAGIC_20 987020
-#define MAGIC_25 987025
+input double  InpBuy_L4        = 25.0;
+input int     InpBuy_L4_SL     = 100;
+input int     InpBuy_L4_TP     = 150;
+
+input double  InpBuy_BE_Zone   = 30.0; // Buy-ийн SL-ийг Entry рүү зөөх RSI
+
+input group "=== SELL RSI Түвшин ба Эрсдэл (90, 85, 80, 75) ==="
+input bool    InpAllowSell     = true;
+input double  InpSell_L1       = 90.0; // Reset & 1st Entry
+input int     InpSell_L1_SL    = 100;  // 1-р оролтын SL (Pips)
+input int     InpSell_L1_TP    = 150;  // 1-р оролтын TP (Pips)
+
+input double  InpSell_L2       = 85.0;
+input int     InpSell_L2_SL    = 100;
+input int     InpSell_L2_TP    = 150;
+
+input double  InpSell_L3       = 80.0;
+input int     InpSell_L3_SL    = 100;
+input int     InpSell_L3_TP    = 150;
+
+input double  InpSell_L4       = 75.0;
+input int     InpSell_L4_SL    = 100;
+input int     InpSell_L4_TP    = 150;
+
+input double  InpSell_BE_Zone  = 70.0; // Sell-ийн SL-ийг Entry рүү зөөх RSI
+
+input group "=== Break Even (BE) Ашгийн Тохиргоо (Pips) ==="
+input int     InpBE_Main_Pips  = 100;  // L1 (10/90) оролтуудын BE ашиг
+input int     InpBE_Sub_Pips   = 50;   // Бусад оролтуудын BE ашиг
+input int     InpBE_Add_Pips   = 2;    // Entry-гээс хэдэн pip дээр SL тавих
+
+input group "=== Дансны удирдлага (Compound) ==="
+input double InpBaseBalance    = 50.0;
+input double InpBaseLot        = 0.03;
+input double InpMaxLot         = 10.0;
+
+// Magic Numbers
+#define M_B1 987010
+#define M_B2 987015
+#define M_B3 987020
+#define M_B4 987025
+#define M_S1 988090
+#define M_S2 988085
+#define M_S3 988080
+#define M_S4 988075
 
 CTrade  trade;
 int     handleRSI;
 double  pipsToPoints;
-bool    isReady = false; 
-bool    l10_done = false, l15_done = false, l20_done = false, l25_done = false;
+bool    isBuyReady = false, isSellReady = false;
+bool    b1, b2, b3, b4;
+bool    s1, s2, s3, s4;
 
-int OnInit()
-{
+int OnInit() {
    pipsToPoints = (_Digits == 3 || _Digits == 5) ? 10.0 : 1.0;
-   handleRSI = iRSI(_Symbol, PERIOD_M5, InpRSI_Period, PRICE_CLOSE);
+   handleRSI = iRSI(_Symbol, PERIOD_M5, 14, PRICE_CLOSE);
    return(INIT_SUCCEEDED);
 }
 
-void OnTick()
-{
+void OnTick() {
    double rsiBuffer[];
    ArraySetAsSeries(rsiBuffer, true);
    if(CopyBuffer(handleRSI, 0, 0, 2, rsiBuffer) < 2) return;
-   
    double currRSI = rsiBuffer[0];
 
-   // 1. RESET LOGIC
-   if(currRSI < InpLevel_Reset) 
-   {
-      isReady = true;
-      l10_done = false; l15_done = false; l20_done = false; l25_done = false;
+   // --- BUY LOGIC ---
+   if(currRSI < InpBuy_L1) { isBuyReady = true; b1=b2=b3=b4=false; }
+   if(isBuyReady && InpAllowBuy) {
+      if(!b1 && currRSI >= InpBuy_L1) { if(OpenSpecificOrder(M_B1, "Buy", InpBuy_L1_SL, InpBuy_L1_TP)) b1=true; }
+      if(!b2 && currRSI >= InpBuy_L2) { if(OpenSpecificOrder(M_B2, "Buy", InpBuy_L2_SL, InpBuy_L2_TP)) b2=true; }
+      if(!b3 && currRSI >= InpBuy_L3) { if(OpenSpecificOrder(M_B3, "Buy", InpBuy_L3_SL, InpBuy_L3_TP)) b3=true; }
+      if(!b4 && currRSI >= InpBuy_L4) { if(OpenSpecificOrder(M_B4, "Buy", InpBuy_L4_SL, InpBuy_L4_TP)) { b4=true; isBuyReady=false; } }
+      if(currRSI >= InpBuy_BE_Zone) isBuyReady = false;
    }
 
-   // 2. ENTRY LOGIC
-   if(isReady)
-   {
-      if(!l10_done && currRSI >= InpLevel_Reset) { if(OpenOrder(MAGIC_10)) l10_done = true; }
-      if(!l15_done && currRSI >= InpLevel_15)    { if(OpenOrder(MAGIC_15)) l15_done = true; }
-      if(!l20_done && currRSI >= InpLevel_20)    { if(OpenOrder(MAGIC_20)) l20_done = true; }
-      if(!l25_done && currRSI >= InpLevel_25)    { if(OpenOrder(MAGIC_25)) { l25_done = true; isReady = false; } }
-      
-      // 30 давбал 25-ын оролтыг нөхөж нээх
-      if(!l25_done && currRSI >= InpLevel_30)    { if(OpenOrder(MAGIC_25)) { l25_done = true; isReady = false; } }
+   // --- SELL LOGIC ---
+   if(currRSI > InpSell_L1) { isSellReady = true; s1=s2=s3=s4=false; }
+   if(isSellReady && InpAllowSell) {
+      if(!s1 && currRSI <= InpSell_L1) { if(OpenSpecificOrder(M_S1, "Sell", InpSell_L1_SL, InpSell_L1_TP)) s1=true; }
+      if(!s2 && currRSI <= InpSell_L2) { if(OpenSpecificOrder(M_S2, "Sell", InpSell_L2_SL, InpSell_L2_TP)) s2=true; }
+      if(!s3 && currRSI <= InpSell_L3) { if(OpenSpecificOrder(M_S3, "Sell", InpSell_L3_SL, InpSell_L3_TP)) s3=true; }
+      if(!s4 && currRSI <= InpSell_L4) { if(OpenSpecificOrder(M_S4, "Sell", InpSell_L4_SL, InpSell_L4_TP)) { s4=true; isSellReady=false; } }
+      if(currRSI <= InpSell_BE_Zone) isSellReady = false;
    }
 
-   // 3. RSI 30 ХҮРВЭЛ ШУУД BE БОЛГОЖ TP ТАВИХ
-   Update_TP_and_BE_at_30(currRSI);
-
-   // 4. RSI 30 ХҮРЭЭГҮЙ БАЙСАН Ч АШГААР НЬ BE БОЛГОХ
-   ManageRiskByProfit();
+   ManageRSI_Protections(currRSI);
+   ManageProfitProtections();
 }
 
-// RSI 30 давмагц ажиллах функц
-void Update_TP_and_BE_at_30(double rsi)
-{
-   if(rsi < InpLevel_30) return;
-
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
+void ManageProfitProtections() {
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
       ulong ticket = PositionGetTicket(i);
-      if(PositionSelectByTicket(ticket))
-      {
+      if(PositionSelectByTicket(ticket)) {
          long m = PositionGetInteger(POSITION_MAGIC);
-         if(m >= 987010 && m <= 987025)
-         {
-            double open = PositionGetDouble(POSITION_PRICE_OPEN);
-            double sl = PositionGetDouble(POSITION_SL);
-            double new_tp = open + InpTP_Final * pipsToPoints * _Point;
+         if(m < 987000 || m > 989000) continue;
 
-            // RSI 30-д хүрсэн бол ашиг хамаагүй шууд BE болгож, TP-г 150 дээр зооно
-            if(sl < open || PositionGetDouble(POSITION_TP) == 0)
-               trade.PositionModify(ticket, open, new_tp);
+         double open = PositionGetDouble(POSITION_PRICE_OPEN);
+         double cur = PositionGetDouble(POSITION_PRICE_CURRENT);
+         double sl = PositionGetDouble(POSITION_SL);
+         int type = (int)PositionGetInteger(POSITION_TYPE);
+         double pips = (type == POSITION_TYPE_BUY) ? (cur - open) : (open - cur);
+         pips /= (pipsToPoints * _Point);
+
+         int targetBE = (m == M_B1 || m == M_S1) ? InpBE_Main_Pips : InpBE_Sub_Pips;
+
+         if(pips >= targetBE) {
+            double nSL = (type == POSITION_TYPE_BUY) ? (open + InpBE_Add_Pips * pipsToPoints * _Point) : (open - InpBE_Add_Pips * pipsToPoints * _Point);
+            if(type == POSITION_TYPE_BUY && (sl < open)) trade.PositionModify(ticket, nSL, PositionGetDouble(POSITION_TP));
+            if(type == POSITION_TYPE_SELL && (sl > open || sl == 0)) trade.PositionModify(ticket, nSL, PositionGetDouble(POSITION_TP));
          }
       }
    }
 }
 
-// Ашигт хүрвэл BE болгох функц (RSI 30 хүрэхийг хүлээхгүй)
-void ManageRiskByProfit()
-{
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
+void ManageRSI_Protections(double rsi) {
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
       ulong ticket = PositionGetTicket(i);
-      if(PositionSelectByTicket(ticket))
-      {
+      if(PositionSelectByTicket(ticket)) {
          long m = PositionGetInteger(POSITION_MAGIC);
-         if(m < 987010 || m > 987025) continue;
-
          double open = PositionGetDouble(POSITION_PRICE_OPEN);
-         double cur = PositionGetDouble(POSITION_PRICE_CURRENT);
-         double sl = PositionGetDouble(POSITION_SL);
-         double profitPips = (cur - open) / (pipsToPoints * _Point);
+         int type = (int)PositionGetInteger(POSITION_TYPE);
+         double curTP = PositionGetDouble(POSITION_TP);
+         double nSL = (type == POSITION_TYPE_BUY) ? (open + InpBE_Add_Pips * pipsToPoints * _Point) : (open - InpBE_Add_Pips * pipsToPoints * _Point);
 
-         // 10-ын оролт 100 pip ашигт хүрвэл
-         if(m == MAGIC_10 && profitPips >= InpBE_Level10 && sl < open)
-            trade.PositionModify(ticket, open, PositionGetDouble(POSITION_TP));
-
-         // 15, 20, 25-ын оролтууд 50 pip ашигт хүрвэл
-         if((m == MAGIC_15 || m == MAGIC_20 || m == MAGIC_25) && profitPips >= InpBE_Level15_25 && sl < open)
-            trade.PositionModify(ticket, open, PositionGetDouble(POSITION_TP));
+         // Buy RSI BE
+         if(m >= 987010 && m <= 987025 && rsi >= InpBuy_BE_Zone) {
+            if(PositionGetDouble(POSITION_SL) < open) trade.PositionModify(ticket, nSL, curTP);
+         }
+         // Sell RSI BE
+         if(m >= 988075 && m <= 988090 && rsi <= InpSell_BE_Zone) {
+            if(PositionGetDouble(POSITION_SL) > open || PositionGetDouble(POSITION_SL) == 0) trade.PositionModify(ticket, nSL, curTP);
+         }
       }
    }
 }
 
-bool OpenOrder(int magic)
-{
+bool OpenSpecificOrder(int magic, string side, int sl_pips, int tp_pips) {
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
    double lot = MathFloor(((balance / InpBaseBalance) * InpBaseLot) / SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP)) * SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
-   lot = MathMax(lot, SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN));
-   lot = MathMin(lot, InpMaxLot);
-
-   double price = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   double sl_val = price - InpSL_Initial * pipsToPoints * _Point;
-   
+   lot = MathMax(lot, SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN)); lot = MathMin(lot, InpMaxLot);
    trade.SetExpertMagicNumber(magic);
-   return trade.Buy(lot, _Symbol, price, sl_val, 0);
+
+   if(side == "Buy") {
+      double price = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      double sl = price - sl_pips * pipsToPoints * _Point;
+      double tp = price + tp_pips * pipsToPoints * _Point;
+      return trade.Buy(lot, _Symbol, price, sl, tp);
+   } else {
+      double price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      double sl = price + sl_pips * pipsToPoints * _Point;
+      double tp = price - tp_pips * pipsToPoints * _Point;
+      return trade.Sell(lot, _Symbol, price, sl, tp);
+   }
 }
