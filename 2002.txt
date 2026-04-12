@@ -1,0 +1,118 @@
+//+------------------------------------------------------------------+
+//|                                   RSI_Compound_Pro_M5_v9.0.mq5 |
+//+------------------------------------------------------------------+
+#property strict
+#include <Trade\Trade.mqh>
+
+input group "=== RSI ТҮВШИН (ЧАНГАРУУЛСАН) ==="
+input double  InpBuy_Limit  = 28.0;  
+input double  InpSell_Limit = 72.0;  
+
+input group "=== ЭРСДЭЛ БА ДАНС ==="
+input int     InpSL_Initial     = 1000;    // 100 PIP SL
+input int     InpTP_Target      = 1500;    // RSI бүсэд ороход тавих TP
+input double  InpBaseBalance    = 50.0;
+input double  InpBaseLot        = 0.03;
+input double  InpAbsoluteMaxLot = 100.0; 
+
+CTrade  trade;
+int     handleRSI;
+double  pipsToPoints;
+
+//+------------------------------------------------------------------+
+int OnInit() {
+   pipsToPoints = (_Digits == 3 || _Digits == 5) ? 10.0 : 1.0;
+   handleRSI = iRSI(_Symbol, PERIOD_M5, 14, PRICE_CLOSE);
+   return(INIT_SUCCEEDED);
+}
+
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason) {
+   IndicatorRelease(handleRSI);
+}
+
+//+------------------------------------------------------------------+
+void OnTick() {
+   double rsiBuffer[];
+   ArraySetAsSeries(rsiBuffer, true);
+   if(CopyBuffer(handleRSI, 0, 0, 2, rsiBuffer) < 2) return;
+   
+   double currRSI = rsiBuffer[0];
+   double prevRSI = rsiBuffer[1];
+
+   // BUY: RSI 28-аас доош + Дээшээ эргэлт (Hook)
+   if(currRSI <= InpBuy_Limit && currRSI > prevRSI) {
+      ExecuteTrade(987028, "Buy");
+   }
+   
+   // SELL: RSI 72-аас дээш + Доошоо эргэлт (Hook)
+   if(currRSI >= InpSell_Limit && currRSI < prevRSI) {
+      ExecuteTrade(988072, "Sell");
+   }
+
+   ManageProtections(currRSI);
+}
+
+//+------------------------------------------------------------------+
+void ExecuteTrade(int magic, string side) {
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+      ulong ticket = PositionGetTicket(i);
+      if(PositionSelectByTicket(ticket)) {
+         if(PositionGetInteger(POSITION_MAGIC) == magic) return;
+      }
+   }
+
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   double brokerMax = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+   
+   double calcLot = (balance / InpBaseBalance) * InpBaseLot;
+   calcLot = MathFloor(calcLot / step) * step;
+   
+   double finalLot = MathMin(calcLot, InpAbsoluteMaxLot); 
+   finalLot = MathMin(finalLot, brokerMax);
+   finalLot = MathMax(finalLot, SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN));
+
+   trade.SetExpertMagicNumber(magic);
+   double price = (side == "Buy") ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double sl = price + (side == "Buy" ? -InpSL_Initial : InpSL_Initial) * pipsToPoints * _Point;
+   
+   if(side == "Buy") trade.Buy(finalLot, _Symbol, price, sl, 0);
+   else trade.Sell(finalLot, _Symbol, price, sl, 0);
+}
+
+//+------------------------------------------------------------------+
+void ManageProtections(double rsi) {
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+      ulong ticket = PositionGetTicket(i);
+      if(PositionSelectByTicket(ticket)) {
+         long m = PositionGetInteger(POSITION_MAGIC);
+         if(m < 987000 || m > 989000) continue;
+
+         double open = PositionGetDouble(POSITION_PRICE_OPEN);
+         double cur  = PositionGetDouble(POSITION_PRICE_CURRENT);
+         int    type = (int)PositionGetInteger(POSITION_TYPE);
+         double sl   = PositionGetDouble(POSITION_SL);
+         double tp   = PositionGetDouble(POSITION_TP);
+         
+         double pips = (type == POSITION_TYPE_BUY) ? (cur - open) : (open - cur);
+         pips /= (pipsToPoints * _Point);
+
+         // Break-even: 50 pip ашигт SL-ийг оролтын үнэ рүү
+         if(pips >= 50) {
+            double entrySL = open + (type == POSITION_TYPE_BUY ? 2 : -2) * _Point * pipsToPoints;
+            if((type == POSITION_TYPE_BUY && sl < open) || (type == POSITION_TYPE_SELL && (sl > open || sl == 0))) {
+               trade.PositionModify(ticket, entrySL, tp);
+            }
+         }
+
+         // TP: RSI эсрэг бүсэд (35/65) ороход 150 pip TP зооно
+         if(tp <= 0) {
+            if((type == POSITION_TYPE_BUY && rsi >= 30.0) || (type == POSITION_TYPE_SELL && rsi <= 70.0)) {
+               double nTP = cur + (type==POSITION_TYPE_BUY ? InpTP_Target : -InpTP_Target) * _Point * pipsToPoints;
+               trade.PositionModify(ticket, sl, nTP);
+            }
+         }
+      }
+   }
+}
